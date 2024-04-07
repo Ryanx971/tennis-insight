@@ -38,3 +38,7 @@ var/
 *.bak
 *.swp
 *~
+
+# Custom
+sandbox.py
+.env

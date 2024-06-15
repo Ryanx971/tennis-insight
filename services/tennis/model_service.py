@@ -1,5 +1,6 @@
 import os
 import time
+import logging
 import joblib
 import numpy as np
 import pandas as pd
@@ -11,6 +12,9 @@ from sklearn.preprocessing import LabelBinarizer
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 
 def add_winrate_columns(df):
@@ -27,78 +31,84 @@ def add_winrate_columns(df):
     This function iterates over each row of the input DataFrame to calculate the winrate of each player based on their past matches. It creates two new columns in the DataFrame, 'winner_winrate' and 'loser_winrate', representing the winrate of the winner and loser of each match, respectively. The winrate is calculated as the percentage of victories out of total matches played for each player up to the current match date. If a player has no past matches, their winrate is set to 50% as a default value.
     """
     start_time = time.time()
-    df_copy = df.copy()
 
-    for index, row in df_copy.iterrows():
-        current_match_date = row['tourney_date']
-        winner_id = row['winner_id']
-        loser_id = row['loser_id']
+    player_ids = set(df['winner_id']) | set(df['loser_id'])
+    winrates = {player_id: (0.5, 0.5) for player_id in player_ids}
+    surface_winrates = {player_id: {
+        surface: 0.5 for surface in df['surface'].unique()} for player_id in player_ids}
+    recent_forms = {player_id: 0.5 for player_id in player_ids}
 
-        winner_matches = []
-        winner_victories = 0
-        loser_matches = []
-        loser_victories = 0
-        head_to_head_matches = []
-        head_to_head_winner_victories = 0
+    # Winrate calculation
+    for player_id in player_ids:
+        player_matches = df[(df['winner_id'] == player_id)
+                            | (df['loser_id'] == player_id)]
+        total_matches = len(player_matches)
+        if total_matches > 0:
+            wins = len(
+                player_matches[player_matches['winner_id'] == player_id])
+            winrate = wins / total_matches
+            winrates[player_id] = (winrate, 1 - winrate)
 
-        for index, row in df_copy.iterrows():
-            # winner overall winrate
-            if (row['tourney_date'] < current_match_date) and (row['winner_id'] == winner_id or row['loser_id'] == winner_id):
-                winner_matches.append(row)
+        # Surface winrate calculation
+        for surface in df['surface'].unique():
+            surface_matches = player_matches[player_matches['surface'] == surface]
+            total_surface_matches = len(surface_matches)
+            if total_surface_matches > 0:
+                surface_wins = len(
+                    surface_matches[surface_matches['winner_id'] == player_id])
+                surface_winrate = surface_wins / total_surface_matches
+                surface_winrates[player_id][surface] = surface_winrate
 
-            # loser overall winrate
-            if (row['tourney_date'] < current_match_date) and (row['winner_id'] == loser_id or row['loser_id'] == loser_id):
-                loser_matches.append(row)
+        # Recent form calculation
+        if total_matches >= 10:
+            recent_matches = player_matches.head(10)
+            recent_wins = len(
+                recent_matches[recent_matches['winner_id'] == player_id])
+            recent_form = recent_wins / 10
+            recent_forms[player_id] = recent_form
 
-            if (row['tourney_date'] < current_match_date) and (row['winner_id'] == loser_id or row['loser_id'] == loser_id):
-                loser_matches.append(row)
+    df['winner_winrate'] = df['winner_id'].map(lambda x: winrates[x][0])
+    df['loser_winrate'] = df['loser_id'].map(lambda x: winrates[x][0])
 
-            # Head-to-head
-            if ((row['winner_id'] == winner_id and row['loser_id'] == loser_id) or
-                (row['winner_id'] == loser_id and row['loser_id'] == winner_id)) and \
-                    row['tourney_date'] < current_match_date:
-                head_to_head_matches.append(row)
-                if row['winner_id'] == winner_id:
-                    head_to_head_winner_victories += 1
+    df['winner_head_to_head_winrate'] = df.apply(lambda row: calculate_head_to_head_winrate(
+        row['tourney_date'], row['winner_id'], row['loser_id'], df), axis=1)
+    df['loser_head_to_head_winrate'] = 1 - df['winner_head_to_head_winrate']
 
-        for row in winner_matches:
-            if row['winner_id'] == winner_id:
-                winner_victories += 1
+    df['winner_surface_winrate'] = df.apply(
+        lambda row: surface_winrates[row['winner_id']][row['surface']], axis=1)
+    df['loser_surface_winrate'] = df.apply(
+        lambda row: surface_winrates[row['loser_id']][row['surface']], axis=1)
 
-        for row in loser_matches:
-            if row['winner_id'] == loser_id:
-                loser_victories += 1
-
-        winner_winrate = 0.5
-        if winner_matches:
-            winner_winrate = round(
-                winner_victories / len(winner_matches), 2)
-
-        loser_winrate = 0.5
-        if loser_matches:
-            loser_winrate = round(
-                loser_victories / len(loser_matches), 2)
-
-        winner_head_to_head_winrate = 0.5
-        if head_to_head_matches:
-            winner_head_to_head_winrate = round(
-                head_to_head_winner_victories / len(head_to_head_matches), 2)
-
-        df['winner_winrate'] = winner_winrate
-        df['loser_winrate'] = loser_winrate
-        df['winner_head_to_head_winrate'] = winner_head_to_head_winrate
-        df['loser_head_to_head_winrate'] = round(
-            1 - winner_head_to_head_winrate, 2)
-
-        # print("=====================================================")
-        # print("Winner head to head winrate : ", winner_head_to_head_winrate)
-        # print("Loser head to head winrate : ", round(
-        #     1 - winner_head_to_head_winrate, 2))
-        # print("=====================================================")
+    df['winner_recent_form'] = df['winner_id'].map(lambda x: recent_forms[x])
+    df['loser_recent_form'] = df['loser_id'].map(lambda x: recent_forms[x])
 
     end_time = time.time()
     execution_time = end_time - start_time
-    print(f"Execution time of add_winrate_columns : {execution_time} seconds")
+    logger.info(
+        "Execution time of add_winrate_columns : %f seconds", execution_time)
+
+
+def calculate_head_to_head_winrate(match_date, player1_id, player2_id, df):
+    """
+    Calculate the head-to-head winrate between two players.
+
+    Args:
+    - match_date (int): Date of the match.
+    - player1_id (int): ID of the first player.
+    - player2_id (int): ID of the second player.
+    - df (DataFrame): Input DataFrame containing tennis match data.
+
+    Returns:
+    - float: Head-to-head winrate of the first player against the second player.
+    """
+    head_to_head_matches = df[((df['winner_id'] == player1_id) & (df['loser_id'] == player2_id)) | (
+        (df['winner_id'] == player2_id) & (df['loser_id'] == player1_id)) & (df['tourney_date'] < match_date)]
+    total_head_to_head_matches = len(head_to_head_matches)
+    if total_head_to_head_matches > 0:
+        player1_wins = len(
+            head_to_head_matches[head_to_head_matches['winner_id'] == player1_id])
+        return player1_wins / total_head_to_head_matches
+    return 0.5
 
 
 def load_data():
@@ -123,7 +133,7 @@ def load_data():
     data = data[data['tourney_level'].isin(selected_levels)]
 
     num_rows = data.shape[0]
-    print("Number of rows in the DataFrame:", num_rows)
+    logger.info("Number of rows in the DataFrame: %d", num_rows)
 
     return data
 
@@ -185,16 +195,18 @@ def create_label(df):
                             "loser_rank_points": "first_player_rank_points",
                             "loser_seed": "first_player_seed", "loser_id": "first_player_id",
                             "loser_winrate": "first_player_winrate", "loser_head_to_head_winrate": "first_player_head_to_head_winrate",
+                            "loser_surface_winrate": "first_player_surface_winrate", "loser_recent_form": "first_player_recent_form",
                             "winner_age": "second_player_age",
                             "winner_rank": "second_player_rank", "winner_rank_points": "second_player_rank_points",
                             "winner_seed": "second_player_seed", "winner_id": "second_player_id", "winner_winrate": "second_player_winrate",
                             "winner_head_to_head_winrate": "second_player_head_to_head_winrate",
+                            "winner_surface_winrate": "second_player_surface_winrate", "winner_recent_form": "second_player_recent_form"
                             })
     copy_2_df = df.copy()
-    copy_2_df[['first_player_age', 'first_player_rank', 'first_player_rank_points', 'first_player_seed', 'first_player_id', "first_player_winrate", "first_player_head_to_head_winrate",
-               'second_player_age', 'second_player_rank', 'second_player_rank_points', 'second_player_seed', 'second_player_id', 'second_player_winrate', "second_player_head_to_head_winrate"]]\
-        = copy_2_df[['second_player_age', 'second_player_rank', 'second_player_rank_points', 'second_player_seed', 'second_player_id', 'second_player_winrate', "second_player_head_to_head_winrate",
-                    'first_player_age', 'first_player_rank', 'first_player_rank_points', 'first_player_seed', 'first_player_id', 'first_player_winrate', "first_player_head_to_head_winrate"]]
+    copy_2_df[['first_player_age', 'first_player_rank', 'first_player_rank_points', 'first_player_seed', 'first_player_id', "first_player_winrate", "first_player_head_to_head_winrate", 'first_player_surface_winrate', 'first_player_recent_form',
+               'second_player_age', 'second_player_rank', 'second_player_rank_points', 'second_player_seed', 'second_player_id', 'second_player_winrate', "second_player_head_to_head_winrate", 'second_player_surface_winrate', 'second_player_recent_form']]\
+        = copy_2_df[['second_player_age', 'second_player_rank', 'second_player_rank_points', 'second_player_seed', 'second_player_id', 'second_player_winrate', "second_player_head_to_head_winrate", 'second_player_surface_winrate', 'second_player_recent_form',
+                    'first_player_age', 'first_player_rank', 'first_player_rank_points', 'first_player_seed', 'first_player_id', 'first_player_winrate', "first_player_head_to_head_winrate", 'first_player_surface_winrate', 'first_player_recent_form']]
 
     # Second player wins so label=0
     winner_player2 = np.zeros(df.shape[0])
@@ -236,7 +248,6 @@ def handle_missing_values(df):
     Returns:
     - df (DataFrame): DataFrame with missing values handled.
     """
-
     # Finally, let's handle the few remaing None values using SimpleImputer.
     imputer = SimpleImputer()
     df_imputed = pd.DataFrame(imputer.fit_transform(df))
@@ -255,7 +266,6 @@ def train_model(df):
     Returns:
     - classifier (RandomForestClassifier): Trained random forest classifier.
     """
-
     model_file_name = 'random_forest_tennis_model.pkl'
     directory = os.path.abspath('./models')
     y = df['label']
@@ -264,6 +274,8 @@ def train_model(df):
     # Split data : 80% for train and 20% for test.
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2)
+
+    # Random Forest
     classifier = RandomForestClassifier(n_estimators=100)
     classifier.fit(X_train, y_train)
     predictions = classifier.predict(X_test)
@@ -272,7 +284,11 @@ def train_model(df):
     os.makedirs(directory, exist_ok=True)
     joblib.dump(classifier, os.path.join(directory, model_file_name))
 
-    print('Accuracy score : ', accuracy_score(y_test, predictions))
+    # Save the new model
+    os.makedirs(directory, exist_ok=True)
+    joblib.dump(classifier, os.path.join(directory, model_file_name))
+
+    logger.info("Accuracy score : %f", accuracy_score(y_test, predictions))
 
     return classifier
 
@@ -309,6 +325,5 @@ def predict_match(classifier, features):
     Returns:
     - prediction (array): Prediction of the match outcome probability.
     """
-
     match_data = pd.DataFrame([features])
     return classifier.predict_proba(match_data)

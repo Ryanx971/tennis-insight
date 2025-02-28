@@ -1,3 +1,4 @@
+from collections import defaultdict
 import os
 import time
 import logging
@@ -172,6 +173,9 @@ def preprocess_data(data):
     df['tourney_month'] = df.tourney_date.astype(str).str[4:6].astype(int)
     df = df.drop(columns=['tourney_date'])
 
+    # Add ELO columns
+    compute_surface_elo(df)
+
     return df
 
 
@@ -256,39 +260,100 @@ def handle_missing_values(df):
     return df_imputed
 
 
+def compute_surface_elo(df):
+    """
+    Sort matches chronologically and compute ELO per surface.
+    Store 'winner_elo_surface' / 'loser_elo_surface' in df.
+    """
+    elo = defaultdict(lambda: defaultdict(lambda: 1500)
+                      )  # elo[surface][player_id]
+    K = 32
+
+    df = df.sort_values(by=["tourney_year", "tourney_month"]).copy()
+
+    for idx, row in df.iterrows():
+        # might be numeric if encoded, or string if not yet encoded
+        surface = row["surface"]
+        w_id = row["winner_id"]
+        l_id = row["loser_id"]
+
+        rating_w = elo[surface][w_id]
+        rating_l = elo[surface][l_id]
+
+        expected_w = 1 / (1 + 10 ** ((rating_l - rating_w) / 400))
+        expected_l = 1 - expected_w
+
+        new_rating_w = rating_w + K * (1 - expected_w)
+        new_rating_l = rating_l + K * (0 - expected_l)
+
+        elo[surface][w_id] = new_rating_w
+        elo[surface][l_id] = new_rating_l
+
+        # Store pre-update rating as a feature
+        df.loc[idx, "winner_elo_surface"] = rating_w
+        df.loc[idx, "loser_elo_surface"] = rating_l
+
+    return df
+
+
 def train_model(df):
     """
-    Train a random forest classifier on the DataFrame.
+    Train a RandomForest model using a time-based split, log feature importance,
+    and save the resulting model.
 
     Args:
-    - df (DataFrame): DataFrame containing features and labels.
+        df (DataFrame): Preprocessed DataFrame containing 'label' (0/1) and
+                        date columns ('tourney_year', 'tourney_month').
 
     Returns:
-    - classifier (RandomForestClassifier): Trained random forest classifier.
+        classifier (RandomForestClassifier): The trained classifier.
     """
+
+    # Path setup
     model_file_name = 'random_forest_tennis_model.pkl'
     directory = os.path.abspath('./models')
-    y = df['label']
-    X = df.drop(columns='label')
-    # Let's now train and execute our prediction model. For this we will use  RandomForest.
-    # Split data : 80% for train and 20% for test.
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2)
+    os.makedirs(directory, exist_ok=True)
 
-    # Random Forest
-    classifier = RandomForestClassifier(n_estimators=100)
+    # 1) Sort by date (ascending)
+    df = df.sort_values(
+        by=["tourney_year", "tourney_month"]).reset_index(drop=True)
+
+    # 2) Time-based split: train on < 2023, test on >= 2023 (adjust as needed)
+    train_df = df[df["tourney_year"] < 2023]
+    test_df = df[df["tourney_year"] >= 2023]
+
+    # 3) Separate features (X) and target (y)
+    y_train = train_df["label"]
+    X_train = train_df.drop(columns=["label"])
+    y_test = test_df["label"]
+    X_test = test_df.drop(columns=["label"])
+
+    # 4) Instantiate and train a RandomForest
+    classifier = RandomForestClassifier(
+        n_estimators=100,
+        random_state=42
+    )
     classifier.fit(X_train, y_train)
+
+    # importances = classifier.feature_importances_
+
+    # for feature, imp in zip(X_train.columns, importances):
+    #     logger.info("Feature %s has importance %f", feature, imp)
+
+    # 5) Evaluate on the time-based test set
     predictions = classifier.predict(X_test)
+    accuracy = accuracy_score(y_test, predictions)
+    logger.info("Time-based accuracy on 2023 test set: %.4f", accuracy)
 
-    # Save the new model
-    os.makedirs(directory, exist_ok=True)
-    joblib.dump(classifier, os.path.join(directory, model_file_name))
+    # 6) Log feature importances
+    importances = classifier.feature_importances_
+    for feature, imp in zip(X_train.columns, importances):
+        logger.info("Feature '%s' importance: %.4f", feature, imp)
 
-    # Save the new model
-    os.makedirs(directory, exist_ok=True)
-    joblib.dump(classifier, os.path.join(directory, model_file_name))
-
-    logger.info("Accuracy score : %f", accuracy_score(y_test, predictions))
+    # 7) Save the trained model
+    model_path = os.path.join(directory, model_file_name)
+    joblib.dump(classifier, model_path)
+    logger.info("Saved RandomForest model to %s", model_path)
 
     return classifier
 

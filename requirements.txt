@@ -1,4 +1,7 @@
+# Core data libraries
 numpy
 pandas
 scikit-learn
+
+# Environment variables
 python-dotenv

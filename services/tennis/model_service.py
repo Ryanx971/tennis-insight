@@ -9,10 +9,10 @@ import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import LabelBinarizer
-
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
+from scipy.stats import randint
+from sklearn.metrics import accuracy_score, log_loss, brier_score_loss, precision_score, recall_score, f1_score
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -125,7 +125,7 @@ def load_data():
     # Five last years of ATP matches are stored in different csv files. We will concatenate them into one single dataframe.
     directory = os.path.abspath('./datasets/tennis/matches')
 
-    files = ['atp_matches_2023.csv', 'atp_matches_2022.csv',
+    files = ['atp_matches_2024.csv', 'atp_matches_2023.csv', 'atp_matches_2022.csv',
              'atp_matches_2021.csv', 'atp_matches_2020.csv', 'atp_matches_2019.csv', 'atp_matches_2018.csv', 'atp_matches_2017.csv', 'atp_matches_2016.csv']
     data = pd.concat([pd.read_csv(os.path.join(directory, file))
                       for file in files], ignore_index=True)
@@ -296,66 +296,121 @@ def compute_surface_elo(df):
     return df
 
 
+def evaluate_additional_metrics(model, X_test, y_test):
+    """
+    Evaluates the model using additional metrics:
+    - Log Loss: measures how well the predicted probabilities are calibrated.
+    - Brier Score: measures the mean squared difference between predicted probabilities and actual outcomes.
+    - Precision, Recall, and F1 Score.
+    """
+    # Obtain predicted probabilities and predictions
+    probs = model.predict_proba(X_test)
+    predictions = model.predict(X_test)
+
+    # Compute metrics
+    ll = log_loss(y_test, probs)
+    bs = brier_score_loss(y_test, probs[:, 1])
+    precision = precision_score(y_test, predictions)
+    recall = recall_score(y_test, predictions)
+    f1 = f1_score(y_test, predictions)
+
+    # Log results
+    logger.info("Log Loss: %.4f", ll)
+    logger.info("Brier Score: %.4f", bs)
+    logger.info("Precision: %.4f", precision)
+    logger.info("Recall: %.4f", recall)
+    logger.info("F1 Score: %.4f", f1)
+
+    # Optionally, return these metrics in a dictionary
+    return {"log_loss": ll, "brier_score": bs, "precision": precision, "recall": recall, "f1": f1}
+
+
+def tune_random_forest(X_train, y_train):
+    """
+    Performs randomized hyperparameter search for a RandomForestClassifier using TimeSeriesSplit.
+    Returns the best model found.
+    """
+    param_dist = {
+        "n_estimators": randint(50, 300),
+        "max_depth": randint(3, 20),
+        "min_samples_split": randint(2, 10),
+        "min_samples_leaf": randint(1, 10),
+    }
+
+    rf_base = RandomForestClassifier(random_state=42)
+
+    # Use TimeSeriesSplit to avoid lookahead bias in time-series data
+    tscv = TimeSeriesSplit(n_splits=3)
+
+    random_search = RandomizedSearchCV(
+        estimator=rf_base,
+        param_distributions=param_dist,
+        n_iter=20,
+        cv=tscv,
+        verbose=2,
+        random_state=42,
+        n_jobs=-1,
+        scoring='accuracy'
+    )
+
+    random_search.fit(X_train, y_train)
+
+    logger.info("Best hyperparameters: %s", random_search.best_params_)
+    best_model = random_search.best_estimator_
+    return best_model
+
+
 def train_model(df):
     """
-    Train a RandomForest model using a time-based split, log feature importance,
-    and save the resulting model.
+    Trains a RandomForest model using a time-based split (training on data before 2024, testing on 2024),
+    performs hyperparameter tuning, logs feature importances, and saves the optimized model.
 
     Args:
-        df (DataFrame): Preprocessed DataFrame containing 'label' (0/1) and
-                        date columns ('tourney_year', 'tourney_month').
+        df (DataFrame): Preprocessed DataFrame containing the 'label' column and date columns 'tourney_year' and 'tourney_month'.
 
     Returns:
         classifier (RandomForestClassifier): The trained classifier.
     """
-
-    # Path setup
-    model_file_name = 'random_forest_tennis_model.pkl'
-    directory = os.path.abspath('./models')
-    os.makedirs(directory, exist_ok=True)
-
-    # 1) Sort by date (ascending)
+    # 1) Sort the DataFrame by date (ascending)
     df = df.sort_values(
         by=["tourney_year", "tourney_month"]).reset_index(drop=True)
 
-    # 2) Time-based split: train on < 2023, test on >= 2023 (adjust as needed)
-    train_df = df[df["tourney_year"] < 2023]
-    test_df = df[df["tourney_year"] >= 2023]
+    # 2) Time-based split: train on data where tourney_year < 2024, test on data where tourney_year >= 2024
+    train_df = df[df["tourney_year"] < 2024]
+    test_df = df[df["tourney_year"] >= 2024]
 
-    # 3) Separate features (X) and target (y)
     y_train = train_df["label"]
     X_train = train_df.drop(columns=["label"])
     y_test = test_df["label"]
     X_test = test_df.drop(columns=["label"])
 
-    # 4) Instantiate and train a RandomForest
-    classifier = RandomForestClassifier(
-        n_estimators=100,
-        random_state=42
-    )
-    classifier.fit(X_train, y_train)
+    logger.info("Starting hyperparameter tuning for RandomForest...")
+    best_rf = tune_random_forest(X_train, y_train)
+    logger.info("Hyperparameter tuning completed.")
 
-    # importances = classifier.feature_importances_
-
-    # for feature, imp in zip(X_train.columns, importances):
-    #     logger.info("Feature %s has importance %f", feature, imp)
-
-    # 5) Evaluate on the time-based test set
-    predictions = classifier.predict(X_test)
+    # 3) Evaluate the best model on the 2024 test set
+    predictions = best_rf.predict(X_test)
     accuracy = accuracy_score(y_test, predictions)
-    logger.info("Time-based accuracy on 2023 test set: %.4f", accuracy)
+    logger.info("Time-based test set accuracy: %.4f", accuracy)
 
-    # 6) Log feature importances
-    importances = classifier.feature_importances_
-    for feature, imp in zip(X_train.columns, importances):
-        logger.info("Feature '%s' importance: %.4f", feature, imp)
+    # After logging accuracy and feature importances
+    additional_metrics = evaluate_additional_metrics(best_rf, X_test, y_test)
+    logger.info("Additional evaluation metrics: %s", additional_metrics)
 
-    # 7) Save the trained model
+    # 4) Log feature importances
+    # importances = best_rf.feature_importances_
+    # for feature, imp in zip(X_train.columns, importances):
+    #     logger.info("Feature '%s' importance: %.4f", feature, imp)
+
+    # 5) Save the optimized model
+    model_file_name = 'random_forest_tennis_model.pkl'
+    directory = os.path.abspath('./models')
+    os.makedirs(directory, exist_ok=True)
     model_path = os.path.join(directory, model_file_name)
-    joblib.dump(classifier, model_path)
-    logger.info("Saved RandomForest model to %s", model_path)
+    joblib.dump(best_rf, model_path)
+    logger.info("Saved tuned RandomForest model to %s", model_path)
 
-    return classifier
+    return best_rf
 
 
 def predict_match(classifier, features):

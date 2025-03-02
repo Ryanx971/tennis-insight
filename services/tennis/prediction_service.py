@@ -1,10 +1,10 @@
 import os
-import joblib
 import logging
+import joblib
 from sklearn.preprocessing import LabelBinarizer
-from . import features_service
-from . import data_preprocessing_service
-from . import model_training_service
+from services.tennis import features_service
+from services.tennis import data_preprocessing_service
+from services.tennis import model_training_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

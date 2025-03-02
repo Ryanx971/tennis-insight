@@ -1,5 +1,5 @@
 import os
-from .player_data_service import get_players_dataframe, get_rankings_dataframe
+from services.tennis import player_data_service
 
 
 def get_player_features(player_name: str) -> dict:
@@ -17,8 +17,8 @@ def get_player_features(player_name: str) -> dict:
                   'rank_points': int
               }
     """
-    players_df = get_players_dataframe()
-    rankings_df = get_rankings_dataframe()
+    players_df = player_data_service.get_players_dataframe()
+    rankings_df = player_data_service.get_rankings_dataframe()
 
     # Convert name to lowercase for comparison
     search_name = player_name.lower()

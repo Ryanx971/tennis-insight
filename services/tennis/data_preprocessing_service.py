@@ -1,8 +1,8 @@
 import os
+import logging
 import pandas as pd
 import numpy as np
-import logging
-from . import match_stats_service
+from services.tennis import match_stats_service
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ def load_match_data():
     ]
     data = pd.concat([pd.read_csv(os.path.join(directory, file))
                      for file in files], ignore_index=True)
-    selected_levels = ['G', 'M', 'F', 'P', 'PM', 'I']
+    selected_levels = ['G', 'M', 'F', 'A']
     data = data[data['tourney_level'].isin(selected_levels)]
     logger.info("Number of rows in match data: %d", data.shape[0])
     return data

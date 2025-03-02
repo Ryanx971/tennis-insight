@@ -72,8 +72,11 @@ def train_match_model(df):
     Returns:
         model: Trained RandomForestClassifier.
     """
+    # 1) Sort the DataFrame by date (ascending)
     df = df.sort_values(
         by=["tourney_year", "tourney_month"]).reset_index(drop=True)
+
+    # 2) Time-based split: train on data where tourney_year < 2024, test on data where tourney_year >= 2024
     train_df = df[df["tourney_year"] < 2024]
     test_df = df[df["tourney_year"] >= 2024]
 
@@ -86,20 +89,27 @@ def train_match_model(df):
     best_rf = tune_random_forest(X_train, y_train)
     logger.info("Hyperparameter tuning completed.")
 
+    # 3) Evaluate the best model on the 2024 test set
     predictions = best_rf.predict(X_test)
     accuracy = accuracy_score(y_test, predictions)
     logger.info("Time-based test set accuracy: %.4f", accuracy)
 
+    # After logging accuracy and feature importances
     additional_metrics = evaluate_additional_metrics(best_rf, X_test, y_test)
     logger.info("Additional evaluation metrics: %s", additional_metrics)
 
-    # Save the trained model
-    # model_file_name = 'random_forest_tennis_model.pkl'
-    # directory = os.path.abspath('./models')
-    # os.makedirs(directory, exist_ok=True)
-    # model_path = os.path.join(directory, model_file_name)
-    # joblib.dump(best_rf, model_path)
-    # logger.info("Saved tuned RandomForest model to %s", model_path)
+    # 4) Log feature importances
+    # importances = best_rf.feature_importances_
+    # for feature, imp in zip(X_train.columns, importances):
+    #     logger.info("Feature '%s' importance: %.4f", feature, imp)
+
+    # 5) Save the trained model
+    model_file_name = 'random_forest_tennis_model.pkl'
+    directory = os.path.abspath('./models')
+    os.makedirs(directory, exist_ok=True)
+    model_path = os.path.join(directory, model_file_name)
+    joblib.dump(best_rf, model_path)
+    logger.info("Saved tuned RandomForest model to %s", model_path)
 
     return best_rf
 

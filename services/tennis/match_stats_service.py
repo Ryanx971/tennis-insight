@@ -75,16 +75,13 @@ def calculate_head_to_head_win_rate(match_date, player1_id, player2_id, df):
     Returns:
         float: Head-to-head win rate (default 0.5 if no prior matches).
     """
-    head_to_head_matches = df[
-        (((df['winner_id'] == player1_id) & (df['loser_id'] == player2_id)) |
-         ((df['winner_id'] == player2_id) & (df['loser_id'] == player1_id)))
-        & (df['tourney_date'] < match_date)
-    ]
-    total_h2h = len(head_to_head_matches)
-    if total_h2h > 0:
-        wins = len(
+    head_to_head_matches = df[((df['winner_id'] == player1_id) & (df['loser_id'] == player2_id)) | (
+        (df['winner_id'] == player2_id) & (df['loser_id'] == player1_id)) & (df['tourney_date'] < match_date)]
+    total_head_to_head_matches = len(head_to_head_matches)
+    if total_head_to_head_matches > 0:
+        player1_wins = len(
             head_to_head_matches[head_to_head_matches['winner_id'] == player1_id])
-        return wins / total_h2h
+        return player1_wins / total_head_to_head_matches
     return 0.5
 
 

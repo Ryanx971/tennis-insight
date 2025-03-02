@@ -1,63 +1,58 @@
 import os
-import pandas as pd
+from services.tennis import player_data_service
 
 
-# Load player data once at service startup
-PLAYER_FILE_NAME = 'atp_players.csv'
-RANKING_FILE_NAME = 'atp_rankings_current.csv'
-PLAYERS_DIRECTORY = os.path.abspath('./datasets/tennis/players')
-PLAYERS_DF = pd.read_csv(os.path.join(PLAYERS_DIRECTORY, PLAYER_FILE_NAME))
-RANKINGS_DF = pd.read_csv(os.path.join(PLAYERS_DIRECTORY, RANKING_FILE_NAME))
-
-
-def extract_features(player):
+def get_player_features(player_name: str) -> dict:
     """
-    Extract relevant features of the player.
+    Extract relevant features for a given player.
 
     Args:
-    - player (str): player name.
+        player_name (str): Full name of the player (e.g., "Roger Federer").
 
     Returns:
-    - player_features (dict): Dictionary containing player features.
-        {
-            'id': int,
-            'age': int,
-            'rank': int,
-            'rank_points': int
-        }
+        dict: Dictionary with player features, for example:
+              {
+                  'id': int,
+                  'rank': int,
+                  'rank_points': int
+              }
     """
-    player_name = player.lower()
-    player_row = PLAYERS_DF.loc[(PLAYERS_DF['name_first'].str.lower(
-    ) + ' ' + PLAYERS_DF['name_last'].str.lower()) == player_name]
+    players_df = player_data_service.get_players_dataframe()
+    rankings_df = player_data_service.get_rankings_dataframe()
 
+    # Convert name to lowercase for comparison
+    search_name = player_name.lower()
+    player_row = players_df.loc[
+        (players_df['name_first'].str.lower() + ' ' +
+         players_df['name_last'].str.lower()) == search_name
+    ]
     if player_row.empty:
-        raise ValueError(f"Player {player_name} not found.")
+        raise ValueError(f"Player '{player_name}' not found.")
 
     player_id = player_row.iloc[0]['player_id']
-    ranking_row = RANKINGS_DF.loc[RANKINGS_DF['player'] == player_id]
-
+    ranking_row = rankings_df.loc[rankings_df['player'] == player_id]
     if ranking_row.empty:
-        raise ValueError(f"Ranking not found for player {player_name}.")
+        raise ValueError(f"Ranking not found for player '{player_name}'.")
 
     return {
         'id': player_id,
-        # 'age': int(os.getenv("FIRST_PLAYER_AGE")),
         'rank': ranking_row.iloc[0]['rank'],
         'rank_points': ranking_row.iloc[0]['points']
     }
 
 
-def merge_match_and_player_features(match_features, player1_features, player2_features):
+def merge_match_player_features(match_features: dict, player1_features: dict, player2_features: dict) -> dict:
     """
-    Merge match features with player features of two players.
+    Merge match features with features of two players into a single dictionary.
+    The resulting dictionary is reordered to a desired order.
 
     Args:
-    - match_features (dict): Dictionary containing match features.
-    - player1_features (dict): Dictionary containing features of player 1.
-    - player2_features (dict): Dictionary containing features of player 2.
+        match_features (dict): Dictionary containing match features.
+        player1_features (dict): Dictionary with features of player 1.
+        player2_features (dict): Dictionary with features of player 2.
 
     Returns:
-    - merged_features (dict): Merged dictionary containing match and player features.
+        dict: Merged dictionary containing match and player features.
     """
     merged_features = {}
     merged_features.update(match_features)
